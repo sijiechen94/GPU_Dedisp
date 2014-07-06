@@ -2,7 +2,7 @@
 #include "stdio.h"
 #include "limits.h"
 #include "stdlib.h"
-#include "math.h"
+#include "cufft.h"
 
 #define CUDAERROR(err)\
 	 if(err!=cudaSuccess)\
@@ -15,12 +15,12 @@
 #define TILE_WIDTH_F 16
 #define TILE_WIDTH_T 768
 
-#define OFFSET(f,DM) (int)floor(0.00001/f/f*DM+0.5)
+#define OFFSET(f,DM) (int)rintf(0.00001/f/f*DM)
 
 //The data is parallelised in the way that each block has every DM and covers few channels,
 //while each thread in a single block has a particular DM.
 //Each thread goes through all t and sum their channels to add to global accumulator
-__global__ void timeshiftKernel(float* d_f_t, float* d_dm_t, float f_bot, float bandwidth, 
+__global__ void timeshiftKernel(float* d_f_t, cufftComplex* d_dm_t, float f_bot, float bandwidth, 
 				int tsize, int numchan, float coefA, float coefB){
 
 	//Assume DM is a linear function of threadIdx.x
@@ -53,11 +53,13 @@ __global__ void timeshiftKernel(float* d_f_t, float* d_dm_t, float f_bot, float 
 		}
 
 		float localSum = 0;
-		for ( int ch=0; ch<TILE_WIDTH_F; ch++){
+		(*(d_dm_t+tsize*threadIdx.x+t)).x=0;
+		(*(d_dm_t+tsize*threadIdx.x+t)).y=0;
+		for ( int ch=0; ch<TILE_WIDTH_F; ch++)
 			localSum += sharedInput[ch][t+OFFSET((f_tile_low+ch*bandwidth),DM)];
-		atomicAdd(d_dm_t+tsize*threadIdx.x+t,localSum);
+		atomicAdd(&((*(d_dm_t+tsize*threadIdx.x+t)).x),localSum);
 		__syncthreads();
-	}
+	};
 }
 
 void dedispersion(float* f_t, int numchan, int tsize,
@@ -66,15 +68,15 @@ void dedispersion(float* f_t, int numchan, int tsize,
 	//Assume f_t is a 2D Array Input[f][t]
 
 	///Make Time Shift Plan
-	unsigned dms=128;
+	unsigned numDMs=128;
 	unsigned coefA=1;
 	unsigned coefB=0;
 	///Temporarily, no subbands involved
 
 	float* d_f_t;
-	float* d_dm_t;
+	cufftComplex* d_dm_t;
 	unsigned input_size = numchan*tsize*sizeof(float);
-	unsigned output_size = dms*tsize*sizeof(float);
+	unsigned output_size = numDMs*tsize*sizeof(cufftComplex);
 
 	cudaError_t err = cudaMalloc((void**)&d_f_t,input_size);
 	CUDAERROR(err)
@@ -82,7 +84,7 @@ void dedispersion(float* f_t, int numchan, int tsize,
 	CUDAERROR(err)
 	cudaMemcpy(d_f_t,f_t,input_size,cudaMemcpyHostToDevice);
 
-	dim3 dimBlock(dms,1,1);
+	dim3 dimBlock(numDMs,1,1);
 	dim3 dimGrid(numchan/TILE_WIDTH_F,1,1);
 	timeshiftKernel<<<dimGrid,dimBlock>>>(d_f_t,d_dm_t,f_ctr-numchan*bandwidth/2,bandwidth,tsize,numchan,coefA,coefB);
 
@@ -90,11 +92,15 @@ void dedispersion(float* f_t, int numchan, int tsize,
 	float* h_dm_t;
 	h_dm_t = (float*)malloc(output_size);
 	cudaMemcpy(h_dm_t,d_dm_t,output_size,cudaMemcpyDeviceToHost);
+	//Write Y(DM,t) to files
 	
-	///Make cuFFT Plan
-
-	///Execute cuFFT
-	///Meanwhile write Y(DM,t) to files
+	cufftHandle plan;
+	cufftPlanMany(&plan,1,&tsize,NULL,0,0,NULL,0,0,CUFFT_C2C,numDMs);
+	
+	cufftExecC2C(plan,d_dm_t,d_dm_t,CUFFT_FORWARD);
+	cufftDestroy(plan);
+	cudaMemcpy(h_dm_t,d_dm_t,output_size,cudaMemcpyDeviceToHost);
+	//Write Z(DM,f) to files
 
 	cudaFree(d_dm_t);
 }
