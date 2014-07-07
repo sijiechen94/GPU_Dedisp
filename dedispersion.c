@@ -4,18 +4,25 @@
 #include "stdlib.h"
 #include "cufft.h"
 
-#define CUDAERROR(err)\
-	 if(err!=cudaSuccess)\
-	 {printf("%s in %s at line %d\n",\
-	 cudaGetErrorString(err),__FILE__,__LINE__);\
-	 exit(EXIT_FAILURE);}
+#define cudaCheckErrors(msg) \
+    do { \
+        cudaError_t __err = cudaGetLastError(); \
+        if (__err != cudaSuccess) { \
+            fprintf(stderr, "Fatal error: %s (%s at %s:%d)\n", \
+                msg, cudaGetErrorString(__err), \
+                __FILE__, __LINE__); \
+            fprintf(stderr, "*** FAILED - ABORTING\n"); \
+            exit(1); \
+        } \
+    } while (0)
 
 //Tile properties, size of each tile is 48KB,
 //if your shared memory is smaller, make these smaller
 #define TILE_WIDTH_F 16
 #define TILE_WIDTH_T 768
 
-#define OFFSET(f,DM) (int)rintf(0.00001/f/f*DM)
+//For f in GHz, DM in pc*cm^-3
+#define OFFSET(f,DM) (int)rintf(4.149/f/f*DM)
 
 //The data is parallelised in the way that each block has every DM and covers few channels,
 //while each thread in a single block has a particular DM.
@@ -78,11 +85,9 @@ void dedispersion(float* f_t, int numchan, int tsize,
 	unsigned input_size = numchan*tsize*sizeof(float);
 	unsigned output_size = numDMs*tsize*sizeof(cufftComplex);
 
-	cudaError_t err = cudaMalloc((void**)&d_f_t,input_size);
-	CUDAERROR(err)
-	err = cudaMalloc((void**)&d_dm_t,output_size);
-	CUDAERROR(err)
-	cudaMemcpy(d_f_t,f_t,input_size,cudaMemcpyHostToDevice);
+	cudaCheckErrors(cudaMalloc((void**)&d_f_t,input_size));
+	cudaCheckErrors(cudaMalloc((void**)&d_dm_t,input_size));
+	cudaCheckErrors(cudaMemcpy(d_f_t,f_t,input_size,cudaMemcpyHostToDevice));
 
 	dim3 dimBlock(numDMs,1,1);
 	dim3 dimGrid(numchan/TILE_WIDTH_F,1,1);
@@ -91,15 +96,15 @@ void dedispersion(float* f_t, int numchan, int tsize,
 	cudaFree(d_f_t);
 	float* h_dm_t;
 	h_dm_t = (float*)malloc(output_size);
-	cudaMemcpy(h_dm_t,d_dm_t,output_size,cudaMemcpyDeviceToHost);
+	cudaCheckErrors(cudaMemcpy(h_dm_t,d_dm_t,output_size,cudaMemcpyDeviceToHost));
 	//Write Y(DM,t) to files
 	
 	cufftHandle plan;
-	cufftPlanMany(&plan,1,&tsize,NULL,0,0,NULL,0,0,CUFFT_C2C,numDMs);
+	cudaCheckErrors(cufftPlanMany(&plan,1,&tsize,NULL,0,0,NULL,0,0,CUFFT_C2C,numDMs));
 	
-	cufftExecC2C(plan,d_dm_t,d_dm_t,CUFFT_FORWARD);
+	cudaCheckErrors(cufftExecC2C(plan,d_dm_t,d_dm_t,CUFFT_FORWARD));
 	cufftDestroy(plan);
-	cudaMemcpy(h_dm_t,d_dm_t,output_size,cudaMemcpyDeviceToHost);
+	cudaCheckErrors(cudaMemcpy(h_dm_t,d_dm_t,output_size,cudaMemcpyDeviceToHost));
 	//Write Z(DM,f) to files
 
 	cudaFree(d_dm_t);
