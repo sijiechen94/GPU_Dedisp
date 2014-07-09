@@ -1,6 +1,5 @@
 #include "cuda.h"
 #include "stdio.h"
-#include "limits.h"
 #include "stdlib.h"
 #include "cufft.h"
 
@@ -21,63 +20,54 @@
 #define TILE_WIDTH_F 16
 #define TILE_WIDTH_T 768
 
+__device__ __constant__ float c_DMs[1024];
+
 //For f in GHz, DM in pc*cm^-3
-#define OFFSET(f,DM) (int)rintf(4.149/f/f*DM)
+#define OFFSET(f,DM) (int)rintf((4.149/f/f*DM)/dt)
 
 //The data is parallelised in the way that each block has every DM and covers few channels,
 //while each thread in a single block has a particular DM.
 //Each thread goes through all t and sum their channels to add to global accumulator
 __global__ void timeshiftKernel(float* d_f_t, cufftComplex* d_dm_t, float f_bot, float bandwidth, 
-				int tsize, int numchan, float coefA, float coefB){
+				int tsize, int numchan, float dt, float* c_DMs){
 
-	//Assume DM is a linear function of threadIdx.x
-	float DM = coefA*threadIdx.x + coefB;
-
-	//define tile properties to be loaded into shared memory each time
-	float f_tile_low = TILE_WIDTH_F * blockIdx.x * bandwidth + f_bot;
-	float f_tile_high = (TILE_WIDTH_F * blockIdx.x + TILE_WIDTH_F - 1) * bandwidth + f_bot;
-	int t_tile_step = TILE_WIDTH_T - (OFFSET(f_tile_low,(coefA*blockDim.x-coefA+coefB))-OFFSET(f_tile_high,coefB));
-		//t_tile_step = TILE_WIDTH_T - (Largest_Offset - Smallest_Offset)
-	int t_tile_begin = OFFSET(f_tile_high,DM)-t_tile_step;
 	__device__ __shared__ float sharedInput[TILE_WIDTH_F][TILE_WIDTH_T];
 	
-	for ( int t=0; t<tsize; t++ ){
+	for ( int t=tsize; t>TILE_WIDTH_T; t-=TILE_WIDTH_T ){
 		
-		//Every time the data to be accessed is out of the shared memory,
-		//reload some data from global memory. It is assumed numDMs is a multiple of 32,
-		//so that thread scheduling is made most efficient. 
-		if(t%t_tile_step==0){
-			t_tile_begin+=t_tile_step;
-			/****Caution****/
-			//12288%blockDim.x=0, so that blockDim.x can only have values like
-			//32, 64, 128... or 96, 192...., otherwise sharedMem can't be fully loaded
-			for ( int i=0; i<TILE_WIDTH_F*TILE_WIDTH_T/blockDim.x; i++ )
-				//This loading is coalesced
-				sharedInput[0][i*blockDim.x+threadIdx.x] = d_f_t[
-					(blockIdx.x*TILE_WIDTH_F + (i*blockDim.x+threadIdx.x)/TILE_WIDTH_T)*tsize 
- 					+ (t_tile_begin + (i*blockDim.x+threadIdx.x)%TILE_WIDTH_T ) ];
-			__syncthreads();
-		}
-
-		float localSum = 0;
-		(*(d_dm_t+tsize*threadIdx.x+t)).x=0;
-		(*(d_dm_t+tsize*threadIdx.x+t)).y=0;
-		for ( int ch=0; ch<TILE_WIDTH_F; ch++)
-			localSum += sharedInput[ch][t+OFFSET((f_tile_low+ch*bandwidth),DM)];
-		atomicAdd(&((*(d_dm_t+tsize*threadIdx.x+t)).x),localSum);
 		__syncthreads();
+		///Note that only the first 32 threads (first warp) is used to load,
+		///so make sure your data RUN AT LEAST 32 DMs
+		if(threadIdx.x<32)
+			for ( int i=0; i<384; i++ )	sharedInput[0][i*32+threadIdx.x] = 
+				d_f_t[(blockIdx.x*TILE_WIDTH_F + (i*32+threadIdx.x)/TILE_WIDTH_T)*tsize 
+ 					+ ((i*32+threadIdx.x)%TILE_WIDTH_T ) + (t-TILE_WIDTH_T) ];
+		__syncthreads();
+		
+		for ( int tj=0; tj<TILE_WIDTH_T; tj++ ) 
+			for ( int ch=0; ch<TILE_WIDTH_F; ch++){
+				///Note that atomicAdd may hinder performance, especially on old cards
+				atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-OFFSET((ch+blockIdx.x*TILE_WIDTH_F),(c_DMs[threadIdx.x])))
+					  ,sharedInput[0][tj+ch*TILE_WIDTH_F]);
+				///However, race conditions only happens between different BLOCKS,
+				///so if you are running only one block at any time, use normal add.
+				///And even you're running not too many (4 or 5) blocks, the chance
+				///of race conditions happening is quite negligible.
+				///PS: When you are feeling lucky, use normal add:
+				/***    (*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-OFFSET((ch+blockIdx.x*TILE_WIDTH_F),(c_DMs[threadIdx.x])))).x
+					+=sharedInput[0][tj+ch*TILE_WIDTH_F];    ***/
+			}
 	};
 }
 
 void dedispersion(float* f_t, int numchan, int tsize,
-		  float f_ctr, float bandwidth){
+		  float f_ctr, float bandwidth, float dt, float* DMs, int numDMs){
 
 	//Assume f_t is a 2D Array Input[f][t]
 
 	///Make Time Shift Plan
-	unsigned numDMs=128;
-	unsigned coefA=1;
-	unsigned coefB=0;
+	float sizeofDMArray = numDMs*sizeof(float);
+	cudaCheckErrors(cudaMemcpyToSymbol(c_DMs,DMs,sizeofDMArray,0,cudaMemcpyHostToDevice));
 	///Temporarily, no subbands involved
 
 	float* d_f_t;
@@ -91,7 +81,7 @@ void dedispersion(float* f_t, int numchan, int tsize,
 
 	dim3 dimBlock(numDMs,1,1);
 	dim3 dimGrid(numchan/TILE_WIDTH_F,1,1);
-	timeshiftKernel<<<dimGrid,dimBlock>>>(d_f_t,d_dm_t,f_ctr-numchan*bandwidth/2,bandwidth,tsize,numchan,coefA,coefB);
+	timeshiftKernel<<<dimGrid,dimBlock>>>(d_f_t,d_dm_t,f_ctr-numchan*bandwidth/2,bandwidth,tsize,numchan,dt,c_DMs);
 
 	cudaFree(d_f_t);
 	float* h_dm_t;
