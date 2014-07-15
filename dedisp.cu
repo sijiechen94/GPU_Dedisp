@@ -21,12 +21,14 @@ __device__ __constant__ float c_DMs[1024];
 
 
 __global__ void setComplexZero(cufftComplex* d_dest, int arraysize){
-	for(int i=0; i<arraysize; i++)	*(d_dest+i+arraysize*threadIdx.x) = (cufftComplex){0,0};
+	curandState_t state;
+	curand_init(threadIdx.x*threadIdx.x,threadIdx.x,threadIdx.x,&state);
+	for(int i=0; i<arraysize; i++)	*(d_dest+i+arraysize*threadIdx.x) = (cufftComplex){2*curand_normal(&state)+10,0};
 }
 
 __global__ void timeshiftKernel(float* d_f_t, cufftComplex* d_dm_t, float f_ctr, float bandwidth, 
 				int tsize, int numchan, float dt){
-
+	
 	__device__ __shared__ float sharedInput[TILE_WIDTH_F][TILE_WIDTH_T];
 	float DM = c_DMs[threadIdx.x];
 	//The relative offset is quite small(<10000) so that every two of
@@ -186,7 +188,7 @@ int main(){
 	for ( k=0;k<16;k++){
 		float f=f_ctr-((numchan-1)/2.0-k)*bandwidth;
 		for ( i=0 ; i<numsignal; i++)
-		*(f_t+k*tsize+200+i*768+(int)round(4.149/f/f*4/0.001))=1000;
+		*(f_t+k*tsize+200+i*768+(int)round(4.149/f/f*4/0.001))=100;
 	}
 
 	float *t_output,*f_output;
@@ -198,10 +200,10 @@ int main(){
 	dedispersion(f_t, numchan, tsize, f_ctr, bandwidth,dt, DMs, numDMs , t_output, f_output);
 
 	//Print output
-	for (i=0; i<numchan*tsize; i++)
-	fprintf(fp,"%.0f%c",*(f_t+i),(i+1)%tsize?'\t':'\n');
-	//for (i=0; i<numDMs*tsize; i++)
-	//fprintf(fp,"%.0f%c",t_output[2*i],(i+1)%tsize?'\t':'\n');
+	//for (i=0; i<numchan*tsize; i++)
+	//fprintf(fp,"%.0f%c",*(f_t+i),(i+1)%tsize?'\t':'\n');
+	for (i=0; i<numDMs*tsize; i++)
+	fprintf(fp,"%.0f%c",t_output[2*i],(i+1)%tsize?'\t':'\n');
 	for (i=0; i<numDMs*tsize; i++)
 	fprintf(fp2,"%.0f%c",POWER(f_output[2*i],f_output[2*i+1]),(i+1)%tsize?'\t':'\n');
 	fclose(fp);
