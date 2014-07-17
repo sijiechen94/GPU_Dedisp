@@ -3,22 +3,121 @@
 #include "presto.h"
 #include "mask.h"
 #include "psrfits.h"
+#include <ctype.h>
 
 #define DEBUG_OUT 1
+#define strMove(d,s) memmove(d,s,strlen(s)+1)
 
-static unsigned char *cdatabuffer;
-static float *fdatabuffer, *offsets, *scales, *weights;
+static unsigned char* cdatabuffer;
 static int cur_file = 0, cur_subint = 1, numbuffered = 0;
 static long long cur_spec = 0, new_spec = 0;
-
-extern double slaCldj(int iy, int im, int id, int *j);
-extern short transpose_bytes(unsigned char *a, int nx, int ny, unsigned char *move,
-                             int move_size);
-extern void add_padding(float *fdata, float *padding, int numchan, int numtopad);
 
 void get_PSRFITS_subint(float *fdata, unsigned char *cdata, 
                         struct spectra_info *s);
 
+static int mtab[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+
+double slaCldj(int iy, int im, int id, int *j)
+{
+   double mjd = 0.0;
+   /*  Month lengths in days */
+
+   /* Preset status */
+   *j = 0;
+   /* Validate year */
+   if (iy < -4699) {
+      *j = 1;
+   } else {
+      /* Validate month */
+      if (im >= 1 && im <= 12) {
+         /* Allow for leap year */
+         if (iy % 4 == 0) {
+            mtab[1] = 29;
+         } else {
+            mtab[1] = 28;
+         }
+         if (iy % 100 == 0 && iy % 400 != 0) {
+            mtab[1] = 28;
+         }
+         /* Validate day */
+         if (id < 1 || id > mtab[im - 1]) {
+            *j = 3;
+         }
+         /* Modified Julian Date */
+         mjd = (double) ((iy - (12 - im) / 10 + 4712) * 1461 / 4 +
+                         ((im + 9) % 12 * 306 + 5) / 10 -
+                         (iy - (12 - im) / 10 + 4900) / 100 * 3 / 4 + id - 2399904);
+      } else {                  /* Bad month */
+         *j = 2;
+      }
+   }
+   return mjd;
+}
+
+double hms2rad(int hour, int min, double sec)
+/* Convert hours, minutes, and seconds of arc to radians */
+{
+   return SEC2RAD * (60.0 * (60.0 * (double) hour + (double) min) + sec);
+}
+
+double dms2rad(int deg, int min, double sec)
+/* Convert degrees, minutes, and seconds of arc to radians */
+{
+   double sign = 1.0;
+
+   if (deg < 0) sign = -1.0;
+   if (deg==0 && (min < 0 || sec < 0.0)) sign = -1.0;
+   return sign * ARCSEC2RAD * (60.0 * (60.0 * (double) abs(deg)
+                                       + (double) abs(min)) + fabs(sec));
+}
+
+char *rmtrail(char *str)
+/* Removes trailing space from a string */
+{
+    int i;
+    
+    if (str && 0 != (i = strlen(str))) {
+        while (--i >= 0) {
+            if (!isspace(str[i]))
+                break;
+        }
+        str[++i] = '\0';
+    }
+    return str;
+}
+
+char *rmlead(char *str)
+/* Removes leading space from a string */
+{
+    char *obuf;
+    
+    if (str) {
+        for (obuf = str; *obuf && isspace(*obuf); ++obuf);
+        if (str != obuf)
+            strMove(str, obuf);
+    }
+    return str;
+}
+
+char *remove_whitespace(char *str)
+/* Remove leading and trailing space from a string */
+{
+    return rmlead(rmtrail(str));
+}
+
+void ra_dec_from_string(char *radec, int *h_or_d, int *m, double *s)
+/* Return a values for hours or degrees, minutes and seconds        */
+/* given a properly formatted RA or DEC string.                     */
+/*   radec is a string with J2000 RA  in the format 'hh:mm:ss.ssss' */
+/*   or a string with J2000 DEC in the format 'dd:mm:ss.ssss'       */
+{
+    radec = remove_whitespace(radec);
+    sscanf(radec, "%d:%d:%lf\n", h_or_d, m, s);
+    if (radec[0]=='-' && *h_or_d==0) {
+        *m = -*m;
+        *s = -*s;
+    }
+}
 
 double DATEOBS_to_MJD(char *dateobs, int *mjd_day, double *mjd_fracday)
 // Convert DATE-OBS string from PSRFITS primary HDU to a MJD
@@ -396,37 +495,6 @@ void read_PSRFITS_files(struct spectra_info *s)
     
     // Compute the bandwidth
     s->BW = s->num_channels * s->df;
-
-    // Flip the bytes for Parkes FB_1BIT data
-    if (s->bits_per_sample==1 &&
-        strcmp(s->telescope, "Parkes")==0 &&
-        strcmp(s->backend, "FB_1BIT")==0) {
-        printf("Flipping bit ordering since Parkes FB_1BIT data.\n");
-        s->flip_bytes = 1;
-    } else {
-        s->flip_bytes = 0;
-    }
-
-    // Allocate the buffers
-    cdatabuffer = gen_bvect(s->bytes_per_subint);
-    // Following is twice as big because we use it as a ringbuffer too
-    fdatabuffer = gen_fvect(2 * s->spectra_per_subint * s->num_channels);
-    s->padvals = gen_fvect(s->num_channels);
-    for (ii = 0 ; ii < s->num_channels ; ii++)
-        s->padvals[ii] = 0.0;
-    offsets = gen_fvect(s->num_channels * s->num_polns);
-    scales = gen_fvect(s->num_channels * s->num_polns);
-    weights = gen_fvect(s->num_channels);
-    // Initialize these if we won't be reading them from the file
-    if (s->apply_offset==0) 
-        for (ii = 0 ; ii < s->num_channels * s->num_polns ; ii++)
-            offsets[ii] = 0.0;
-    if (s->apply_scale==0)
-        for (ii = 0 ; ii < s->num_channels * s->num_polns ; ii++)
-            scales[ii] = 1.0;
-    if (s->apply_weight==0)
-        for (ii = 0 ; ii < s->num_channels ; ii++)
-            weights[ii] = 1.0;
 }
 
 
@@ -480,7 +548,7 @@ int get_PSRFITS_rawblock(float *fdata, struct spectra_info *s, int *padding)
 // returned as 1, then padding was added and statistics should not be
 // calculated.  Return 1 on success.
 {
-    int numtopad = 0, numtoread, status = 0, anynull;
+    int numtoread, status = 0, anynull;
     float *fdataptr = fdata;
     
     fdataptr = fdata + numbuffered * s->num_channels;
@@ -524,8 +592,6 @@ int get_PSRFITS_rawblock(float *fdata, struct spectra_info *s, int *padding)
             get_PSRFITS_subint(fdataptr, cdatabuffer, s);
             cur_subint++;
             goto return_block;
-        } else {
-            goto padding_block;
         }
     } else {
         // We are going to move to the next file, so update
@@ -542,40 +608,8 @@ int get_PSRFITS_rawblock(float *fdata, struct spectra_info *s, int *padding)
         cur_file++;
         cur_subint = 1;
         return get_PSRFITS_rawblock(fdata, s, padding);
-    } else { // add padding
-        goto padding_block;
     }
     
-padding_block:
-    if (new_spec < cur_spec) {
-        // Files out of order?  Shouldn't get here.
-        fprintf(stderr, "Error!:  Current subint has earlier time than previous!\n\n"
-                "\tfilename = '%s', subint = %d\n"
-                "\tcur_spec = %lld  new_spec = %lld\n",
-                s->filenames[cur_file], cur_subint, cur_spec, new_spec);
-        exit(1);
-    }
-    numtopad = new_spec - cur_spec;
-    // Don't add more than 1 block and if buffered, then realign the buffer
-    if (numtopad > (s->spectra_per_subint - numbuffered))
-        numtopad = s->spectra_per_subint - numbuffered;
-    add_padding(fdataptr, s->padvals, s->num_channels, numtopad);
-    // Update pointer into the buffer
-    numbuffered = (numbuffered + numtopad) % s->spectra_per_subint;
-    // Set the padding flag
-    *padding = 1;
-    // If we haven't gotten a full block, or completed the buffered one
-    // then recursively call get_PSRFITS_rawblock()
-    if (numbuffered) {
-        printf("Adding %d spectra of padding to buffer at subint %d\n",
-               numtopad, cur_subint);
-        return get_PSRFITS_rawblock(fdata, s, padding);
-    } else {
-        printf("Adding %d spectra of padding at subint %d\n",
-               numtopad, cur_subint);
-        goto return_block;
-    }
-
 return_block:
     // Apply the corrections that need a full block
 
@@ -600,17 +634,6 @@ void get_PSRFITS_subint(float *fdata, unsigned char *cdata,
     // The following allows us to read byte-packed data
     numtoread = s->samples_per_subint * s->bits_per_sample / 8;
 
-    // Read the weights, offsets, and scales if required
-    if (s->apply_weight)
-        fits_read_col(s->fitsfiles[cur_file], TFLOAT, s->dat_wts_col, cur_subint, 1L, 
-                      s->num_channels, 0, weights, &anynull, &status);
-    if (s->apply_offset)
-        fits_read_col(s->fitsfiles[cur_file], TFLOAT, s->dat_offs_col, cur_subint, 1L, 
-                      s->num_channels*s->num_polns, 0, offsets, &anynull, &status);
-    if (s->apply_scale)
-        fits_read_col(s->fitsfiles[cur_file], TFLOAT, s->dat_scl_col, cur_subint, 1L, 
-                      s->num_channels*s->num_polns, 0, scales, &anynull, &status);
-
     // Now actually read the subint into the temporary buffer
     fits_read_col(s->fitsfiles[cur_file], s->FITS_typecode, 
                   s->data_col, cur_subint, 1L, numtoread, 
@@ -621,7 +644,7 @@ void get_PSRFITS_subint(float *fdata, unsigned char *cdata,
                 "\tfilename = '%s', subint = %d.  FITS status = %d.  Exiting.\n",
                 s->filenames[cur_file], cur_subint, status);
         exit(1);
-    }
+    } //Error handling
 
     // The following converts that byte-packed data into bytes, in place
     if (s->bits_per_sample == 4) {
@@ -691,24 +714,21 @@ void get_PSRFITS_subint(float *fdata, unsigned char *cdata,
                     idx = (s->use_poln-1) * s->num_channels;
                     sptr = (short *)cdata + ii * s->samples_per_spectra + idx;
                     for (jj = 0 ; jj < s->num_channels ; jj++)
-                        *fptr++ = (((float)(*sptr++) - s->zero_offset) * scales[idx+jj] +
-                                   offsets[idx+jj]) * weights[jj];
+                        *fptr++ = *sptr++;
                 }
             } else if (s->bits_per_sample==32) {
                 for (ii = 0 ; ii < s->spectra_per_subint ; ii++) {
                     idx = (s->use_poln-1) * s->num_channels;
                     ftptr = (float *)cdata + ii * s->samples_per_spectra + idx;
                     for (jj = 0 ; jj < s->num_channels ; jj++)
-                        *fptr++ = (((float)(*ftptr++) - s->zero_offset) * scales[idx+jj] +
-                                   offsets[idx+jj]) * weights[jj];
+                        *fptr++ = *ftptr++;
                 }
             } else {
                 for (ii = 0 ; ii < s->spectra_per_subint ; ii++) {
                     idx = (s->use_poln-1) * s->num_channels;
                     cptr = cdata + ii * s->samples_per_spectra + idx;
                     for (jj = 0 ; jj < s->num_channels ; jj++)
-                        *fptr++ = (((float)(*cptr++) - s->zero_offset) * scales[idx+jj] +
-                                   offsets[idx+jj]) * weights[jj];
+                        *fptr++ = *cptr++;
                 }
             }
         } else if (sum_polns) { // sum the polns if there are 2 by default
@@ -718,30 +738,24 @@ void get_PSRFITS_subint(float *fdata, unsigned char *cdata,
                 for (ii = 0 ; ii < s->spectra_per_subint ; ii++) {
                     sptr = (short *)cdata + ii * s->samples_per_spectra;
                     for (jj = 0 ; jj < s->num_channels ; jj++, sptr++, fptr++) {
-                        *fptr = (((float)(*sptr) - s->zero_offset) * scales[jj] + 
-                                 offsets[jj]) * weights[jj];
-                        *fptr += (((float)(*(sptr+idx)) - s->zero_offset) * scales[idx+jj] +
-                                  offsets[idx+jj]) * weights[jj];
+                        *fptr = *sptr;
+                        *fptr += *(sptr+idx);
                     }
                 }
             } else if (s->bits_per_sample==32) {
                 for (ii = 0 ; ii < s->spectra_per_subint ; ii++) {
                     ftptr = (float *)cdata + ii * s->samples_per_spectra;
                     for (jj = 0 ; jj < s->num_channels ; jj++, ftptr++, fptr++) {
-                        *fptr = (((float)(*ftptr) - s->zero_offset) * scales[jj] +
-                                 offsets[jj]) * weights[jj];
-                        *fptr += (((float)(*(ftptr+idx)) - s->zero_offset) * scales[idx+jj] +
-                                  offsets[idx+jj]) * weights[jj];
+                        *fptr = *ftptr;
+                        *fptr += *(ftptr+idx);
                     }	
                 }
             } else {
                 for (ii = 0 ; ii < s->spectra_per_subint ; ii++) {
                     cptr = cdata + ii * s->samples_per_spectra;
                     for (jj = 0 ; jj < s->num_channels ; jj++, cptr++, fptr++) {
-                        *fptr = (((float)(*cptr) - s->zero_offset) * scales[jj] +
-                                 offsets[jj]) * weights[jj];
-                        *fptr += (((float)(*(cptr+idx)) - s->zero_offset) * scales[idx+jj] +
-                                  offsets[idx+jj]) * weights[jj];
+                        *fptr = *cptr;
+                        *fptr += *(cptr+idx);
                     }
                 }
             }
@@ -752,15 +766,13 @@ void get_PSRFITS_subint(float *fdata, unsigned char *cdata,
             for (ii = 0 ; ii < s->spectra_per_subint ; ii++) {
                 sptr = (short *)cdata + ii * s->samples_per_spectra;
                 for (jj = 0 ; jj < s->num_channels ; jj++)
-                    *fptr++ = (((float)(*sptr++) - s->zero_offset) * scales[jj] +
-                               offsets[jj]) * weights[jj];
+                    *fptr++ = *sptr++;
             }
         } else {
             for (ii = 0 ; ii < s->spectra_per_subint ; ii++) {
                 cptr = cdata + ii * s->samples_per_spectra;
                 for (jj = 0 ; jj < s->num_channels ; jj++)
-                    *fptr++ = (((float)(*cptr++) - s->zero_offset) * scales[jj] +
-                               offsets[jj]) * weights[jj];
+                    *fptr++ = *cptr++;
             }
         }
     }

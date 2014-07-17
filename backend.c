@@ -1,11 +1,11 @@
 #include <sys/types.h>
 #include <pwd.h>
 #include <ctype.h>
-#include "backend_common.h"
-#include "misc_utils.h"
+#include "backend.h"
+#include "vectors.h"
+#include "makeinf.h"
 
 static long long currentspectra = 0;
-static int using_MPI = 0;
 
 #define SWAP(a,b) tmpswap=(a);(a)=(b);(b)=tmpswap;
 

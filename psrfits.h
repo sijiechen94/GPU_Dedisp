@@ -1,4 +1,4 @@
-#include "backend_common.h"
+#include "backend.h"
 
 /* psrfits.c  (generated automatically by cproto) */
 int is_PSRFITS(char *filename);

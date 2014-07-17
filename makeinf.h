@@ -5,14 +5,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
-#include "chkio.h"
 
-#ifndef TWOPI
-#define TWOPI         6.2831853071795864769252867665590057683943387987502
-#endif
-#ifndef DEGTORAD
-#define DEGTORAD      0.017453292519943295769236907684886127134428718885417
-#endif
 #define NUMSCOPES  8
 #define NUMBANDS   6
 #define NUMFILTERS 11

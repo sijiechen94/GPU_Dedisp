@@ -1,18 +1,18 @@
 #include <sys/times.h>
-#include "chkio.h"
 #include <math.h>
 #include <string.h>
 #include <time.h>
-#include "clk_tck.h"
-#include "meminfo.h"
+#include "orbint.h"
 #include "vectors.h"
 #include "makeinf.h"
-#include "orbint.h"
-#include "misc_utils.h"
-#include "cdflib.h"
-#include "database.h"
 #include "makedata.h"
 
+// The most RAM for a single core to use in accelsearch
+#define MAXRAMUSE             2000000000
+// The longest length FFT to do in core memory
+#define MAXREALFFT            1000000000
+// The biggest length FFT to use FFTW for (if larger, use 6-step)
+#define BIGFFTWSIZE           200000000
 #ifndef SQRT2
 #define SQRT2         1.4142135623730950488016887242096980785696718753769
 #endif
@@ -62,14 +62,6 @@
 #ifndef SWAP
 /* Swaps two variables of undetermined type */
 #define SWAP(a,b) tempzz=(a);(a)=(b);(b)=tempzz;
-#endif
-
-#ifndef POWER
-/* Returns unnormalized Fourier power  */
-/*   Requires the following variables in calling function */
-/*   double powargr, powargi; */
-#define POWER(r,i) (powargr=(r),powargi=(i),\
-		    powargr*powargr+powargi*powargi)
 #endif
 
 #ifndef PHASE
@@ -272,6 +264,29 @@ typedef struct bird{
   double lobin;
   double hibin;
 } bird;
+
+#ifndef _RAWTYPE_PART_DECLARED_
+/* Use the following if you want to transform doubles */
+/* typedef double rawtype_part; */
+typedef float rawtype_part;
+#define _RAWTYPE_PART_DECLARED_
+#endif				/* _RAWTYPE_PART_DECLARED_ */
+
+/* Declare a floating point complex type */
+#ifndef _FCOMPLEX_DECLARED_
+typedef struct FCOMPLEX {
+    rawtype_part r, i;
+} fcomplex;
+#define _FCOMPLEX_DECLARED_
+#endif				/* _FCOMPLEX_DECLARED_ */
+
+/* Declare rawtype as fcomplex */
+#ifndef _RAWTYPE_DECLARED_
+typedef fcomplex rawtype;
+typedef rawtype TOMS_el_type;
+#define MPI_rawtype fcomplextype
+#define _RAWTYPE_DECLARED_
+#endif				/* _RAWTYPE_DECLARED_ */
 
 /*****  Function Prototypes    *****/
 

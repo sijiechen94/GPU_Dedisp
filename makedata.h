@@ -5,7 +5,6 @@
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
-#include "chkio.h"
 #include "orbint.h"
 
 #ifndef PI

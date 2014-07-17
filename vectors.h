@@ -1,6 +1,5 @@
 #include <stdlib.h>
 #include <stdio.h>
-#include "fftw3.h"
 #include "rawtype.h"
 
 #ifdef USEDMALLOC
