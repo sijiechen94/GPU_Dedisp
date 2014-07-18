@@ -11,7 +11,7 @@ __device__ __constant__ float c_DMs[1024];
 
 //For f in GHz, DM in pc*cm^-3
 #define OFFSET(f,DM) roundf((4.149/(f)/(f)*(DM))/(dt))
-#define RELATIVE_OFFSET(ch) roundf((OFFSET((f_ctr-bandwidth*((numchan-1)/2.0-(ch)-0*TILE_WIDTH_F)),DM) - OFFSET(f_ctr+(numchan-1)/2.0*bandwidth,DM)))
+#define RELATIVE_OFFSET(ch) roundf((OFFSET((f_ctr-df*((numchan-1)/2.0-(ch)-0*TILE_WIDTH_F)),DM) - OFFSET(f_ctr+(numchan-1)/2.0*df,DM)))
 
 
 //The data is parallelised in the way that each block has every DM and covers few channels,
@@ -26,7 +26,7 @@ __global__ void setComplexZero(cufftComplex* d_dest, int arraysize){
 	for(int i=0; i<arraysize; i++)	*(d_dest+i+arraysize*threadIdx.x) = (cufftComplex){2*curand_normal(&state)+10,0};
 }
 
-__global__ void timeshiftKernel(float* d_f_t, cufftComplex* d_dm_t, float f_ctr, float bandwidth, 
+__global__ void timeshiftKernel(float* d_f_t, cufftComplex* d_dm_t, float f_ctr, float df, 
 				int tsize, int numchan, float dt){
 	
 	__device__ __shared__ float sharedInput[TILE_WIDTH_F][TILE_WIDTH_T];
@@ -110,7 +110,7 @@ __global__ void timeshiftKernel(float* d_f_t, cufftComplex* d_dm_t, float f_ctr,
 }
 
 void dedispersion(float* f_t, int numchan, int tsize,
-		  float f_ctr, float bandwidth, float dt, float* DMs, int numDMs, float* output_dm_t, float* output_f_t){
+		  float f_ctr, float df, float dt, float* DMs, int numDMs, float* output_dm_t, float* output_f_t){
 
 	//Assume f_t is a 2D Array Input[f][t]
 
@@ -131,12 +131,11 @@ void dedispersion(float* f_t, int numchan, int tsize,
 
 	//Launch a small kernel to initialize output array
 	dim3 dimBlock(numDMs,1,1);
-	dim3 dimGrid(1,1,1);
-	setComplexZero<<<1,32>>>(d_dm_t,tsize);
+	setComplexZero<<<1,dimBlock>>>(d_dm_t,tsize);
 
 	//Launch main kernel to do time shift
-	dim3 dimGrid2(numchan/TILE_WIDTH_F,1,1);
-	timeshiftKernel<<<dimGrid2,dimBlock>>>(d_f_t,d_dm_t,f_ctr,bandwidth,tsize,numchan,dt);
+	dim3 dimGrid(numchan/TILE_WIDTH_F,1,1);
+	timeshiftKernel<<<dimGrid,dimBlock>>>(d_f_t,d_dm_t,f_ctr,df,tsize,numchan,dt);
 
 	//Copy output from device memory to host memory
 	cudaFree(d_f_t);
@@ -149,46 +148,60 @@ void dedispersion(float* f_t, int numchan, int tsize,
 	
 	cufftExecC2C(plan,d_dm_t,d_dm_t,CUFFT_FORWARD);
 	cufftDestroy(plan);
+
 	cudaMemcpy(output_f_t,d_dm_t,output_size,cudaMemcpyDeviceToHost);
 	//Write Z(DM,f) to files
 	
-	//DEBUG
 	cudaFree(d_dm_t);
 	printf("End Of Kernel!\n");
 }
 
-#define POWER(r,i) pow(((r)*(r)+(i)*(i)),0.5)
+#define POWER(r,i) ((r)*(r)+(i)*(i))
 
 int main(){
-	FILE* fp=fopen("/nfshome/chensijie/t.txt","w");
-	FILE* fp2=fopen("/nfshome/chensijie/f.txt","w");
 
 	//Initialize observation
-	int numchan = TILE_WIDTH_F;
-	int numsignal = 8;
+	int numchan = 64*TILE_WIDTH_F;
+	int numsignal = 256;
 	int tsize = TILE_WIDTH_T*numsignal;
 	float f_ctr = 17.5;
-	float bandwidth = 1;
-	int numDMs = 32;
+	float df = 0.02;
+	int numDMs = 256;
 	float dt = 0.001;
+
+	//Make output file names
+
+	FILE* fp=fopen("t.txt","wb");
+	FILE* fp2=fopen("f.txt","wb");
+	FILE* fp3=fopen("i.txt","wb");
 
 	int k;
 	//Initialize DM array
 	float *DMs;
-	DMs = (float*)malloc(32*sizeof(float));
+	DMs = (float*)malloc(numDMs*sizeof(float));
 	int i=0;
-	for (i=0;i<32;i++) *(DMs+i)=i;
-
+	for (i=0;i<numDMs;i++) *(DMs+i)=i*1.0;
+	
 	//Initialize input array(Fake data)
 	float* f_t=NULL;
-	f_t = (float*)malloc(sizeof(float)*TILE_WIDTH_F*tsize);
-	for ( k=0;k<TILE_WIDTH_F*tsize;k++)
+	float fakeDM=120;
+	f_t = (float*)malloc(sizeof(float)*numchan*tsize);
+	for ( k=0;k<numchan*tsize;k++)
 		*(f_t+k)=0.0f;
 	printf("Set to zero...\n");
-	for ( k=0;k<16;k++){
-		float f=f_ctr-((numchan-1)/2.0-k)*bandwidth;
-		for ( i=0 ; i<numsignal; i++)
-		*(f_t+k*tsize+200+i*768+(int)round(4.149/f/f*4/0.001))=100;
+	for ( k=0;k<numchan;k++){
+		float f=f_ctr-((numchan-1)/2.0-k)*df;
+		for ( i=0 ; i<numsignal; i++){
+		*(f_t+k*tsize+200+i*768+(int)round(4.149/f/f*fakeDM/dt))=100;
+		*(f_t+k*tsize+200+i*768+(int)round(4.149/f/f*fakeDM/dt)-1)=69;
+		*(f_t+k*tsize+200+i*768+(int)round(4.149/f/f*fakeDM/dt)+1)=69;
+		*(f_t+k*tsize+200+i*768+(int)round(4.149/f/f*fakeDM/dt)-2)=37;
+		*(f_t+k*tsize+200+i*768+(int)round(4.149/f/f*fakeDM/dt)+2)=37;
+		*(f_t+k*tsize+200+i*768+(int)round(4.149/f/f*fakeDM/dt)-3)=18;
+		*(f_t+k*tsize+200+i*768+(int)round(4.149/f/f*fakeDM/dt)+3)=18;
+		*(f_t+k*tsize+200+i*768+(int)round(4.149/f/f*fakeDM/dt)-4)=6;
+		*(f_t+k*tsize+200+i*768+(int)round(4.149/f/f*fakeDM/dt)+4)=6;
+		}
 	}
 
 	float *t_output,*f_output;
@@ -197,15 +210,18 @@ int main(){
 	
 
 	printf("\nStart de-dispersion!\n");	
-	dedispersion(f_t, numchan, tsize, f_ctr, bandwidth,dt, DMs, numDMs , t_output, f_output);
+	dedispersion(f_t, numchan, tsize, f_ctr, df ,dt, DMs, numDMs , t_output, f_output);
 
 	//Print output
-	//for (i=0; i<numchan*tsize; i++)
-	//fprintf(fp,"%.0f%c",*(f_t+i),(i+1)%tsize?'\t':'\n');
+	for (i=0; i<numchan*tsize; i++)
+	fwrite(f_t+i,4,1,fp3);
 	for (i=0; i<numDMs*tsize; i++)
-	fprintf(fp,"%.0f%c",t_output[2*i],(i+1)%tsize?'\t':'\n');
-	for (i=0; i<numDMs*tsize; i++)
-	fprintf(fp2,"%.0f%c",POWER(f_output[2*i],f_output[2*i+1]),(i+1)%tsize?'\t':'\n');
+	fwrite(t_output+2*i,4,1,fp);
+		for (i=0; i<numDMs*tsize; i++){
+		float p = f_output[2*i]*f_output[2*i] + f_output[2*i+1]*f_output[2*i+1];
+		fwrite(&p,4,1,fp2);
+	}
 	fclose(fp);
 	fclose(fp2);
+	fclose(fp3);
 }

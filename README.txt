@@ -2,7 +2,7 @@
 
 Use this command to compile the source:
 
-nvcc -arch=sm_20 dedisp.cu -L$CUDA_TOOLKIT_ROOT_DIR/lib64 -lcufft
+nvcc -arch=sm_20 dedisp.cu -lcufft
               ||
               ||Here Computing Capability 2.0 is the least requirement for the use of 
                     atomicAdd() for float,

@@ -1,11 +1,9 @@
-#ifndef DEDISP_H
-#define DEDISP_H
-
-/*
 #include "cuda.h"
+#include "stdio.h"
+#include "stdlib.h"
 #include "cufft.h"
 #include "curand_kernel.h"
- 
+
 #define cudaCheckErrors(msg) \
     do { \
         cudaError_t __err = cudaGetLastError(); \
@@ -23,9 +21,7 @@ __global__ void setComplexZero(cufftComplex* d_dest, int arraysize);
 
 __global__ void timeshiftKernel(float* d_f_t, cufftComplex* d_dm_t, float f_bot, float bandwidth, 
 				int tsize, int numchan, float dt, float* c_DMs);
-*/
+
 
 void dedispersion(float* f_t, int numchan, int tsize,
-		  float f_ctr, float bandwidth, float dt, float* DMs, int numDMs, float* output_dm_t, float* output_f_t);
-
-#endif
+		  float f_ctr, float bandwidth, float dt, float* DMs, int numDMs, float* output_dm_t);
