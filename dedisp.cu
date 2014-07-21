@@ -26,7 +26,7 @@ __global__ void setComplexZero(cufftComplex* d_dest, int arraysize){
 	for(int i=0; i<arraysize; i++)	*(d_dest+i+arraysize*threadIdx.x) = (cufftComplex){2*curand_normal(&state)+10,0};
 }
 
-__global__ void timeshiftKernel(float* d_f_t, cufftComplex* d_dm_t, float f_ctr, float df, 
+__global__ void timeshiftKernel(float* d_input, cufftComplex* d_output, float f_ctr, float df, 
 				int tsize, int numchan, float dt){
 	
 	__device__ __shared__ float sharedInput[TILE_WIDTH_F][TILE_WIDTH_T];
@@ -49,7 +49,7 @@ __global__ void timeshiftKernel(float* d_f_t, cufftComplex* d_dm_t, float f_ctr,
 		///so make sure your data RUN AT LEAST 32 DMs
 		if(threadIdx.x<WARP)
 			for ( int i=0; i<TILE_WIDTH_T*TILE_WIDTH_F/WARP; i++ )	sharedInput[0][i*WARP+threadIdx.x] = 
-				*(d_f_t+(blockIdx.x*TILE_WIDTH_F + (i*WARP+threadIdx.x)/TILE_WIDTH_T)*tsize 
+				*(d_input+(blockIdx.x*TILE_WIDTH_F + (i*WARP+threadIdx.x)/TILE_WIDTH_T)*tsize 
  					+ ((i*WARP+threadIdx.x)%TILE_WIDTH_T ) + (t-TILE_WIDTH_T));
 		__syncthreads();
 		
@@ -61,23 +61,25 @@ __global__ void timeshiftKernel(float* d_f_t, cufftComplex* d_dm_t, float f_ctr,
 			//at compile time so that the offsets must be settled in global
 			//memory and the load will be much slower. These code might be
 			//extremely ugly and hard to maintain but it's very important.
+
+			//Only write if the all can be write to correct position
 			if(t-TILE_WIDTH_T+tj-off_0_1/65536>0){
-			atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_0_1/65536) ,sharedInput[0][tj]);
-			atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_0_1%65536) ,sharedInput[1][tj]);
-			atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_2_3/65536) ,sharedInput[2][tj]);
-			atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_2_3%65536) ,sharedInput[3][tj]);
-			atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_4_5/65536) ,sharedInput[4][tj]);
-			atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_4_5%65536) ,sharedInput[5][tj]);
-			atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_6_7/65536) ,sharedInput[6][tj]);
-			atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_6_7%65536) ,sharedInput[7][tj]);
-			atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_8_9/65536) ,sharedInput[8][tj]);
-			atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_8_9%65536) ,sharedInput[9][tj]);
-			atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_10_11/65536) ,sharedInput[10][tj]);
-			atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_10_11%65536) ,sharedInput[11][tj]);
-			atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_12_13/65536) ,sharedInput[12][tj]);
-			atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_12_13%65536) ,sharedInput[13][tj]);
-			atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_14_15/65536) ,sharedInput[14][tj]);
-			atomicAdd((float*)(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_14_15%65536) ,sharedInput[15][tj]);
+			atomicAdd((float*)(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_0_1/65536) ,sharedInput[0][tj]);
+			atomicAdd((float*)(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_0_1%65536) ,sharedInput[1][tj]);
+			atomicAdd((float*)(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_2_3/65536) ,sharedInput[2][tj]);
+			atomicAdd((float*)(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_2_3%65536) ,sharedInput[3][tj]);
+			atomicAdd((float*)(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_4_5/65536) ,sharedInput[4][tj]);
+			atomicAdd((float*)(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_4_5%65536) ,sharedInput[5][tj]);
+			atomicAdd((float*)(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_6_7/65536) ,sharedInput[6][tj]);
+			atomicAdd((float*)(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_6_7%65536) ,sharedInput[7][tj]);
+			atomicAdd((float*)(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_8_9/65536) ,sharedInput[8][tj]);
+			atomicAdd((float*)(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_8_9%65536) ,sharedInput[9][tj]);
+			atomicAdd((float*)(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_10_11/65536) ,sharedInput[10][tj]);
+			atomicAdd((float*)(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_10_11%65536) ,sharedInput[11][tj]);
+			atomicAdd((float*)(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_12_13/65536) ,sharedInput[12][tj]);
+			atomicAdd((float*)(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_12_13%65536) ,sharedInput[13][tj]);
+			atomicAdd((float*)(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_14_15/65536) ,sharedInput[14][tj]);
+			atomicAdd((float*)(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_14_15%65536) ,sharedInput[15][tj]);
 
 			//Note that atomicAdd may hinder performance, especially on old cards
 			//However, race conditions only happens between different BLOCKS,
@@ -87,22 +89,22 @@ __global__ void timeshiftKernel(float* d_f_t, cufftComplex* d_dm_t, float f_ctr,
 			//PS: When you are feeling lucky, use normal add:
 
 			
-			/*(*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_0_1/65536)).x+=sharedInput[0][tj+0*TILE_WIDTH_T];
-			(*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_0_1%65536)).x+=sharedInput[0][tj+1*TILE_WIDTH_T];
-			(*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_2_3/65536)).x+=sharedInput[0][tj+2*TILE_WIDTH_T];
-			(*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_2_3%65536)).x+=sharedInput[0][tj+3*TILE_WIDTH_T];
-			(*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_4_5/65536)).x+=sharedInput[0][tj+4*TILE_WIDTH_T];
-			(*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_4_5%65536)).x+=sharedInput[0][tj+5*TILE_WIDTH_T];
-			(*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_6_7/65536)).x+=sharedInput[0][tj+6*TILE_WIDTH_T];
-			(*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_6_7%65536)).x+=sharedInput[0][tj+7*TILE_WIDTH_T];
-			(*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_8_9/65536)).x+=sharedInput[0][tj+8*TILE_WIDTH_T];
-			(*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_8_9%65536)).x+=sharedInput[0][tj+9*TILE_WIDTH_T];
-			(*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_10_11/65536)).x+=sharedInput[0][tj+10*TILE_WIDTH_T];
-			(*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_10_11%65536)).x+=sharedInput[0][tj+11*TILE_WIDTH_T];
-			(*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_12_13/65536)).x+=sharedInput[0][tj+12*TILE_WIDTH_T];
-			(*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_12_13%65536)).x+=sharedInput[0][tj+13*TILE_WIDTH_T];
-			(*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_14_15/65536)).x+=sharedInput[0][tj+14*TILE_WIDTH_T];
-			(*(d_dm_t+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_14_15%65536)).x+=sharedInput[0][tj+15*TILE_WIDTH_T];*/
+			/*(*(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_0_1/65536)).x+=sharedInput[0][tj+0*TILE_WIDTH_T];
+			(*(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_0_1%65536)).x+=sharedInput[0][tj+1*TILE_WIDTH_T];
+			(*(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_2_3/65536)).x+=sharedInput[0][tj+2*TILE_WIDTH_T];
+			(*(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_2_3%65536)).x+=sharedInput[0][tj+3*TILE_WIDTH_T];
+			(*(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_4_5/65536)).x+=sharedInput[0][tj+4*TILE_WIDTH_T];
+			(*(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_4_5%65536)).x+=sharedInput[0][tj+5*TILE_WIDTH_T];
+			(*(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_6_7/65536)).x+=sharedInput[0][tj+6*TILE_WIDTH_T];
+			(*(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_6_7%65536)).x+=sharedInput[0][tj+7*TILE_WIDTH_T];
+			(*(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_8_9/65536)).x+=sharedInput[0][tj+8*TILE_WIDTH_T];
+			(*(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_8_9%65536)).x+=sharedInput[0][tj+9*TILE_WIDTH_T];
+			(*(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_10_11/65536)).x+=sharedInput[0][tj+10*TILE_WIDTH_T];
+			(*(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_10_11%65536)).x+=sharedInput[0][tj+11*TILE_WIDTH_T];
+			(*(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_12_13/65536)).x+=sharedInput[0][tj+12*TILE_WIDTH_T];
+			(*(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_12_13%65536)).x+=sharedInput[0][tj+13*TILE_WIDTH_T];
+			(*(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_14_15/65536)).x+=sharedInput[0][tj+14*TILE_WIDTH_T];
+			(*(d_output+tsize*threadIdx.x+t-TILE_WIDTH_T+tj-off_14_15%65536)).x+=sharedInput[0][tj+15*TILE_WIDTH_T];*/
 			
 			}
 		}
@@ -112,7 +114,11 @@ __global__ void timeshiftKernel(float* d_f_t, cufftComplex* d_dm_t, float f_ctr,
 void dedispersion(float* f_t, int numchan, int tsize,
 		  float f_ctr, float df, float dt, float* DMs, int numDMs, float* output_dm_t, float* output_f_t){
 
-	//Assume f_t is a 2D Array Input[f][t]
+	//Warnings
+	if(tsize%TILE_WIDTH_T) printf("Warning: tsize is not a multiple of TILE_WIDTH_T, some data will be ignored\n");
+	if(nunchan%TILE_WIDTH_F) printf("Warning: numchan is not a multiple of TILE_WIDTH_F, some data will be ignored\n");
+	if(numDMs<32) {printf("Error: numDMs is less than 32, it leads to serious error\n"); exit(1);}
+	if(DMs==NULL) {printf("Error: DMs are not specified!\n"); exit(1);}
 
 	//Write to __constant__ memory
 	int sizeofDMArray = numDMs*sizeof(float);
@@ -120,43 +126,41 @@ void dedispersion(float* f_t, int numchan, int tsize,
 
 	int input_size = numchan*tsize*sizeof(float);
 	int output_size = numDMs*tsize*sizeof(cufftComplex);
+	if(input_size+output_size>=2147483648) {printf("Error:Your data is too big!\n"); exit(1);}
 
 	//Allocate device memory for input and output
-	float* d_f_t;				//input
-	cufftComplex* d_dm_t;			//output
-	cudaMalloc((void**)&d_f_t,input_size);
-	cudaMalloc((void**)&d_dm_t,output_size);
+	float* d_input;				//input
+	cufftComplex* d_output;			//output
+	cudaMalloc((void**)&d_input,input_size);
+	cudaMalloc((void**)&d_output,output_size);
 	//Copy host memory to device memory
-	cudaMemcpy(d_f_t,f_t,input_size,cudaMemcpyHostToDevice);
+	cudaMemcpy(d_input,f_t,input_size,cudaMemcpyHostToDevice);
 
 	//Launch a small kernel to initialize output array
 	dim3 dimBlock(numDMs,1,1);
-	setComplexZero<<<1,dimBlock>>>(d_dm_t,tsize);
+	setComplexZero<<<1,dimBlock>>>(d_output,tsize);
 
 	//Launch main kernel to do time shift
 	dim3 dimGrid(numchan/TILE_WIDTH_F,1,1);
-	timeshiftKernel<<<dimGrid,dimBlock>>>(d_f_t,d_dm_t,f_ctr,df,tsize,numchan,dt);
+	timeshiftKernel<<<dimGrid,dimBlock>>>(d_input,d_output,f_ctr,df,tsize,numchan,dt);
 
 	//Copy output from device memory to host memory
-	cudaFree(d_f_t);
-	cudaMemcpy((void*)output_dm_t,(void*)d_dm_t,output_size,cudaMemcpyDeviceToHost);
+	cudaFree(d_input);
+	cudaMemcpy((void*)output_dm_t,(void*)d_output,output_size,cudaMemcpyDeviceToHost);
 	
 	//Do FFT
 	cufftHandle plan;
 	int n[1]={tsize};
 	cufftPlanMany(&plan,1,n,n,1,tsize,n,1,tsize,CUFFT_C2C,numDMs);
 	
-	cufftExecC2C(plan,d_dm_t,d_dm_t,CUFFT_FORWARD);
+	cufftExecC2C(plan,d_output,d_output,CUFFT_FORWARD);
 	cufftDestroy(plan);
 
-	cudaMemcpy(output_f_t,d_dm_t,output_size,cudaMemcpyDeviceToHost);
+	cudaMemcpy(output_f_t,d_output,output_size,cudaMemcpyDeviceToHost);
 	//Write Z(DM,f) to files
 	
-	cudaFree(d_dm_t);
-	printf("End Of Kernel!\n");
+	cudaFree(d_output);
 }
-
-#define POWER(r,i) ((r)*(r)+(i)*(i))
 
 int main(){
 
@@ -171,9 +175,9 @@ int main(){
 
 	//Make output file names
 
-	FILE* fp=fopen("t.txt","wb");
-	FILE* fp2=fopen("f.txt","wb");
-	FILE* fp3=fopen("i.txt","wb");
+	FILE* fp=fopen("DM_t.txt","wb");
+	FILE* fp2=fopen("DM_f.txt","wb");
+	FILE* fp3=fopen("f_t.txt","wb");
 
 	int k;
 	//Initialize DM array
@@ -215,12 +219,15 @@ int main(){
 	//Print output
 	for (i=0; i<numchan*tsize; i++)
 	fwrite(f_t+i,4,1,fp3);
+	printf("Input wrote to f_t.txt, in %d*%d float\n",numchan,tsize);
 	for (i=0; i<numDMs*tsize; i++)
 	fwrite(t_output+2*i,4,1,fp);
-		for (i=0; i<numDMs*tsize; i++){
+	printf("Time series wrote to DM_t.txt, in %d*%d float\n",numDMs,tsize);
+	for (i=0; i<numDMs*tsize; i++){
 		float p = f_output[2*i]*f_output[2*i] + f_output[2*i+1]*f_output[2*i+1];
 		fwrite(&p,4,1,fp2);
 	}
+	printf("Frequency series wrote to DM_f.txt, in %d*%d float\n",numDMs,tsize);
 	fclose(fp);
 	fclose(fp2);
 	fclose(fp3);
