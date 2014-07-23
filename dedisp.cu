@@ -116,7 +116,7 @@ void dedispersion(float* f_t, int numchan, int tsize,
 
 	//Warnings
 	if(tsize%TILE_WIDTH_T) printf("Warning: tsize is not a multiple of TILE_WIDTH_T, some data will be ignored\n");
-	if(nunchan%TILE_WIDTH_F) printf("Warning: numchan is not a multiple of TILE_WIDTH_F, some data will be ignored\n");
+	if(numchan%TILE_WIDTH_F) printf("Warning: numchan is not a multiple of TILE_WIDTH_F, some data will be ignored\n");
 	if(numDMs<32) {printf("Error: numDMs is less than 32, it leads to serious error\n"); exit(1);}
 	if(DMs==NULL) {printf("Error: DMs are not specified!\n"); exit(1);}
 
